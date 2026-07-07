@@ -7,6 +7,8 @@ interface SizeStats {
   compressedSize: number;
   /** true = hit the requested target, false = missed it, undefined/null = no target was requested */
   targetMet?: boolean | null;
+  /** Number of embedded images actually recompressed. Distinguishes "nothing to compress" from "tried and fell short." */
+  imagesRecompressed?: number;
 }
 
 interface DownloadResultProps {
@@ -59,7 +61,15 @@ export function DownloadResult({
               <span className="text-primary"> · {reduction}% smaller</span>
             )}
           </p>
-          {stats.targetMet === false && (
+          {stats.targetMet === false && stats.imagesRecompressed === 0 && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              This PDF doesn&apos;t contain images we can safely recompress — it may be text/vector-only,
+              or its images are in a format we deliberately leave untouched (1-bit scans,
+              transparency, unusual color spaces) to avoid corrupting them. This is already the
+              smallest safe output.
+            </p>
+          )}
+          {stats.targetMet === false && (stats.imagesRecompressed ?? 0) > 0 && (
             <p className="mt-1 text-xs text-muted-foreground">
               Couldn&apos;t reach the target size without unacceptable quality loss — this is the
               smallest we could get.

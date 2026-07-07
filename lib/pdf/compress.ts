@@ -25,6 +25,19 @@ export interface CompressPdfResult {
   compressedSize: number;
   /** true = hit the target, false = couldn't, null = no target was requested */
   targetMet: boolean | null;
+  /**
+   * Whether any embedded image was actually recompressed. When false, nothing was skipped
+   * due to hitting quality limits — there was simply nothing this tool could safely touch
+   * (no raster images, or all of them are in formats deliberately left alone: 1-bit scans,
+   * transparency, unusual color spaces, chained filters). Callers should show a different
+   * message for this case than "couldn't reach target despite trying."
+   */
+  imagesRecompressed: number;
+}
+
+interface RecompressResult {
+  buffer: Buffer;
+  imagesRecompressed: number;
 }
 
 interface RecompressSettings {
@@ -68,7 +81,7 @@ function resolveMaybe(context: PDFContext, value: PDFObject | undefined): PDFObj
  * (1-bit scans, indexed palettes, CMYK raw samples, JPEG2000, chained filters,
  * images with a soft mask) is left untouched rather than risk corrupting it.
  */
-async function recompressImages(input: Buffer, settings: RecompressSettings): Promise<Buffer> {
+async function recompressImages(input: Buffer, settings: RecompressSettings): Promise<RecompressResult> {
   const doc = await PDFDocument.load(input, { updateMetadata: false });
   const context = doc.context;
 
@@ -206,7 +219,7 @@ async function recompressImages(input: Buffer, settings: RecompressSettings): Pr
   }
 
   const bytes = await doc.save({ useObjectStreams: true });
-  return Buffer.from(bytes);
+  return { buffer: Buffer.from(bytes), imagesRecompressed: staleRefs.length };
 }
 
 export async function compressPdf(
@@ -217,25 +230,35 @@ export async function compressPdf(
   const originalSize = input.length;
 
   if (!targetBytes) {
-    const buffer = await recompressImages(input, { quality: 80, maxDimension: 2000 });
-    return { buffer, originalSize, compressedSize: buffer.length, targetMet: null };
+    const { buffer, imagesRecompressed } = await recompressImages(input, {
+      quality: 80,
+      maxDimension: 2000,
+    });
+    return { buffer, originalSize, compressedSize: buffer.length, targetMet: null, imagesRecompressed };
   }
 
-  let best: Buffer | null = null;
+  let best: RecompressResult | null = null;
 
   for (const attempt of ATTEMPT_LADDER) {
     const candidate = await recompressImages(input, attempt);
-    if (!best || candidate.length < best.length) best = candidate;
-    if (candidate.length <= targetBytes) {
-      return { buffer: candidate, originalSize, compressedSize: candidate.length, targetMet: true };
+    if (!best || candidate.buffer.length < best.buffer.length) best = candidate;
+    if (candidate.buffer.length <= targetBytes) {
+      return {
+        buffer: candidate.buffer,
+        originalSize,
+        compressedSize: candidate.buffer.length,
+        targetMet: true,
+        imagesRecompressed: candidate.imagesRecompressed,
+      };
     }
   }
 
-  const finalBuffer = best ?? input;
+  const finalResult = best ?? { buffer: input, imagesRecompressed: 0 };
   return {
-    buffer: finalBuffer,
+    buffer: finalResult.buffer,
     originalSize,
-    compressedSize: finalBuffer.length,
-    targetMet: finalBuffer.length <= targetBytes,
+    compressedSize: finalResult.buffer.length,
+    targetMet: finalResult.buffer.length <= targetBytes,
+    imagesRecompressed: finalResult.imagesRecompressed,
   };
 }

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { PDFDocument } from "pdf-lib";
+import { PDFDocument, StandardFonts, PDFName, PDFDict, PDFRef, PDFStream, PDFRawStream } from "pdf-lib";
 import sharp from "sharp";
 import { compressPdf } from "@/lib/pdf/compress";
 
@@ -42,6 +42,7 @@ describe("compressPdf", () => {
 
     expect(output.getPageCount()).toBe(2);
     expect(result.targetMet).toBeNull();
+    expect(result.imagesRecompressed).toBe(0);
   });
 
   it("meaningfully shrinks a PDF with a large embedded photo", async () => {
@@ -51,8 +52,55 @@ describe("compressPdf", () => {
     const result = await compressPdf(input);
 
     expect(result.compressedSize).toBeLessThan(result.originalSize * 0.7);
+    expect(result.imagesRecompressed).toBe(1);
     const output = await PDFDocument.load(result.buffer);
     expect(output.getPageCount()).toBe(1);
+  });
+
+  it("reports zero images recompressed (not a misleading 'couldn't hit target') for a PDF with no compressible images", async () => {
+    // Regression for a real bug report: a text/vector-only PDF (or one whose images are
+    // all in formats we deliberately skip) showed "545.6 KB -> 545.6 KB, couldn't reach
+    // target without quality loss" — implying we tried hard and failed, when actually
+    // nothing was ever recompressed at all. imagesRecompressed lets callers tell these
+    // two situations apart and show an honest message for each.
+    const doc = await PDFDocument.create();
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    const page = doc.addPage([600, 800]);
+    page.drawText("This PDF has no raster images, only text.", { x: 40, y: 700, size: 14, font });
+    const input = Buffer.from(await doc.save());
+
+    // A target the original almost certainly exceeds, so targetMet must be false —
+    // but there's nothing to compress, so imagesRecompressed must be 0, not a quality-ladder failure.
+    const result = await compressPdf(input, { targetBytes: 10 });
+
+    expect(result.imagesRecompressed).toBe(0);
+    expect(result.targetMet).toBe(false);
+  });
+
+  it("reports zero images recompressed for an image in a deliberately-skipped format (has a soft mask)", async () => {
+    const jpeg = await makeNoisyJpeg(400, 400, 90);
+    const buildDoc = await PDFDocument.create();
+    const image = await buildDoc.embedJpg(jpeg);
+    const page = buildDoc.addPage([400, 400]);
+    page.drawImage(image, { x: 0, y: 0, width: 400, height: 400 });
+
+    // embedJpg's XObject stream isn't actually registered in the context until save()
+    // triggers its lazy .embed() — so round-trip through a real save+reload first, exactly
+    // like a real uploaded file, before reaching into resources to tag it as masked.
+    const reloaded = await PDFDocument.load(await buildDoc.save());
+    const xObjects = reloaded.getPage(0).node.Resources()?.lookup(PDFName.of("XObject"), PDFDict);
+    const imageRef = xObjects?.values()[0];
+    if (imageRef instanceof PDFRef) {
+      const stream = reloaded.context.lookup(imageRef, PDFStream);
+      if (stream instanceof PDFRawStream) {
+        stream.dict.set(PDFName.of("SMask"), imageRef); // any ref is enough to trip the "has a mask" check
+      }
+    }
+    const input = Buffer.from(await reloaded.save());
+
+    const result = await compressPdf(input, { targetBytes: 1024 });
+
+    expect(result.imagesRecompressed).toBe(0);
   });
 
   it("iterates toward a target size and reports whether it was met", async () => {

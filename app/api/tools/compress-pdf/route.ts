@@ -40,6 +40,7 @@ export async function POST(request: NextRequest) {
       "X-Target-Met",
       result.targetMet === null ? "" : String(result.targetMet)
     );
+    response.headers.set("X-Images-Recompressed", String(result.imagesRecompressed));
     return response;
   } catch (error) {
     return errorResponse(

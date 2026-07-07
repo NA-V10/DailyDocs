@@ -9,6 +9,7 @@ export interface CompressPdfStats {
   originalSize: number;
   compressedSize: number;
   targetMet: boolean | null;
+  imagesRecompressed: number;
 }
 
 export function useCompressPdf() {
@@ -32,7 +33,8 @@ export function useCompressPdf() {
     const targetMetRaw = headers["x-target-met"];
     const targetMet =
       targetMetRaw === undefined || targetMetRaw === "" ? null : targetMetRaw === "true";
-    return { originalSize, compressedSize, targetMet };
+    const imagesRecompressed = Number(headers["x-images-recompressed"] ?? 0);
+    return { originalSize, compressedSize, targetMet, imagesRecompressed };
   }, [processor.result]);
 
   return { ...processor, process, stats };

@@ -180,7 +180,21 @@ async function recompressImages(input: Buffer, settings: RecompressSettings): Pr
 
       if (newImageBytes.length >= stream.contents.length) continue; // not actually smaller, keep original
 
-      const newImage = await doc.embedJpg(newImageBytes);
+      let newImage;
+      try {
+        // pdf-lib's JpegEmbedder reads the SOI marker via `new DataView(bytes.buffer)`,
+        // which ignores byteOffset — it silently reads from the start of the underlying
+        // ArrayBuffer, not the start of the actual data. Small buffers (exactly what an
+        // aggressively-recompressed JPEG is) are frequently served from Node's pooled
+        // allocator with a non-zero byteOffset, which corrupts that read and throws
+        // "SOI not found in JPEG" even though newImageBytes is a perfectly valid JPEG.
+        // Buffer.from() does NOT fix this (it can also allocate from the same pool) —
+        // only wrapping in `new Uint8Array()` forces a fresh, exactly-sized ArrayBuffer.
+        newImage = await doc.embedJpg(new Uint8Array(newImageBytes));
+      } catch {
+        continue;
+      }
+
       xObjects.set(name, newImage.ref);
       processedRefs.set(ref.objectNumber, newImage.ref);
       staleRefs.push(ref);

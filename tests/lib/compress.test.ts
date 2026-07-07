@@ -68,4 +68,34 @@ describe("compressPdf", () => {
       expect(result.compressedSize).toBeLessThanOrEqual(targetBytes);
     }
   });
+
+  it("does not throw when aggressive compression produces a very small JPEG buffer", async () => {
+    // Regression for a production "SOI not found in JPEG" crash: pdf-lib's JpegEmbedder
+    // reads the SOI marker via `new DataView(bytes.buffer)`, ignoring byteOffset. Small
+    // buffers (exactly what aggressive recompression produces) are frequently served from
+    // Node's pooled allocator with a non-zero byteOffset, corrupting that read. A single
+    // fresh test process doesn't reliably reproduce the pooled allocation on its own —
+    // production, which recompresses many images in sequence, hits it far more often.
+    const jpeg = await makeNoisyJpeg(800, 600, 90);
+    const input = await makePdfWithImage(jpeg, 800, 600);
+
+    await expect(compressPdf(input, { targetBytes: 8 * 1024 })).resolves.toBeDefined();
+  });
+
+  it("embeds a JPEG correctly even when its buffer is a non-zero-byteOffset view into a shared ArrayBuffer", async () => {
+    // Deterministic version of the same regression: force the exact pooled-buffer shape
+    // (small allocation, non-zero byteOffset into a larger underlying ArrayBuffer) that
+    // Node's Buffer pool produces, rather than relying on the allocator's actual state.
+    const jpeg = await sharp({
+      create: { width: 50, height: 50, channels: 3, background: { r: 100, g: 150, b: 200 } },
+    })
+      .jpeg({ quality: 20 })
+      .toBuffer();
+
+    const pooled = Buffer.concat([Buffer.alloc(16), jpeg]).subarray(16);
+    expect(pooled.byteOffset).toBeGreaterThan(0);
+
+    const doc = await PDFDocument.create();
+    await expect(doc.embedJpg(new Uint8Array(pooled))).resolves.toBeDefined();
+  });
 });
